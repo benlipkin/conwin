@@ -102,6 +102,12 @@ class Pipeline(Object):
             self._eval_dataloader,
         )
 
+    def _prepare(self):
+        self._prepare_repo()
+        self._prepare_data()
+        self._prepare_optimizer()
+        self._accelerate()
+
     def _evaluate(self):
         self._model.eval()
         losses = []
@@ -116,10 +122,20 @@ class Pipeline(Object):
             perplexity = float("inf")
         return loss.item(), perplexity.item()
 
+    def _checkpoint(self):
+        loss, perplexity = self._evaluate()
+        self._accelerator.wait_for_everyone()
+        if self._accelerator.is_main_process:
+            self.info(f"Eval Loss: {loss:.2f}, Perplexity: {perplexity:.2f}")
+            self._accelerator.unwrap_model(self._model).save_pretrained(
+                self._output_dir
+            )
+            self._tokenizer.save_pretrained(self._output_dir)
+            # self._repo.push_to_hub(commit_message=f"", blocking=False)
+
     def _train(self):
         self.info("Initializing Training Loop...")
-        self.info(f"{self._args.num_epochs} epochs")
-        self.info(f"{len(self._train_dataloader)} steps per epoch")
+        self.info(f"Total Steps: {self._args.num_epochs * len(self._train_dataloader)}")
         self._model.train()
         for epoch in range(self._args.num_epochs):
             for step, batch in enumerate(self._train_dataloader):
@@ -127,27 +143,19 @@ class Pipeline(Object):
                 loss = outputs.loss
                 if step % (self._args.eval_steps // 10) == 0:
                     if self._accelerator.is_main_process:
-                        self.info(f"Epoch: {epoch}, Step: {step}, Train Loss: {loss}")
+                        self.info(
+                            f"Epoch: {epoch}, Step: {step}, Train Loss: {loss:.2f}"
+                        )
                 self._accelerator.backward(loss)
                 self._accelerator.clip_grad_norm_(self._model.parameters(), 1.0)
                 self._optimizer.step()
                 self._scheduler.step()
                 self._optimizer.zero_grad()
                 if step % self._args.eval_steps == 0:
-                    loss, perplexity = self._evaluate()
+                    self._checkpoint()
                     self._model.train()
-                    self._accelerator.wait_for_everyone()
-                    if self._accelerator.is_main_process:
-                        self.info(f"Eval Loss: {loss}, Perplexity: {perplexity}")
-                        self._accelerator.unwrap_model(self._model).save_pretrained(
-                            self._output_dir
-                        )
-                        self._tokenizer.save_pretrained(self._output_dir)
-                        # self._repo.push_to_hub(commit_message=f"", blocking=False)
+        self._checkpoint()
 
     def run(self):
-        self._prepare_repo()
-        self._prepare_data()
-        self._prepare_optimizer()
-        self._accelerate()
+        self._prepare()
         self._train()
