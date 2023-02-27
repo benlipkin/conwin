@@ -1,4 +1,5 @@
 import argparse
+import json
 
 import accelerate
 import datasets
@@ -29,10 +30,11 @@ class Pipeline(Object):
         self._dataset = dataset
         self._tokenizer = tokenizer
         self._model = model
-        self._output_dir = self._base / args.output_dir
+        self._output_dir = self._base / args.output_dir / args.id
         self._args = args
 
     def _prepare_repo(self):
+        self.info("Preparing Repository...")
         model_id = "_".join(
             str(x)
             for x in [
@@ -40,12 +42,19 @@ class Pipeline(Object):
                 self._args.window_size,
                 self._args.dataset,
                 self._args.num_tokens,
+                self._args.id,
             ]
         )
         repo_id = get_full_repo_name(model_id)
+        self._output_dir.mkdir(parents=True, exist_ok=True)
+        self._tokenizer.save_pretrained(self._output_dir)
+        with open(self._output_dir / "training_args.json", "w") as f:
+            json.dump(vars(self._args), f, indent=4)
         # self._repo = Repository(self._output_dir, clone_from=repo_id)
 
     def _prepare_data(self):
+        self.info("Preparing Dataset...")
+
         def _tokenize(sample):
             outputs = self._tokenizer(
                 sample["text"],
@@ -60,7 +69,6 @@ class Pipeline(Object):
                     input_batch.append(input_ids)
             return {"input_ids": input_batch}
 
-        self.info("Tokenizing dataset...")
         self._tokenizer.pad_token = self._tokenizer.eos_token
         self._dataset = self._dataset.map(
             _tokenize, batched=True, remove_columns="text"
@@ -79,7 +87,20 @@ class Pipeline(Object):
         )
 
     def _prepare_optimizer(self):
-        self._optimizer = AdamW(self._model.parameters(), lr=self._args.learning_rate)
+        self.info("Preparing Optimizer...")
+        params_wd, params_nd = [], []
+        for n, p in self._model.named_parameters():
+            if any(nd in n for nd in ["bias", "LayerNorm.weight"]):
+                params_nd.append(p)
+            else:
+                params_wd.append(p)
+        self._optimizer = AdamW(
+            [
+                {"params": params_wd, "weight_decay": self._args.weight_decay},
+                {"params": params_nd, "weight_decay": 0.0},
+            ],
+            lr=self._args.learning_rate,
+        )
         self._scheduler = get_scheduler(
             name="linear",
             optimizer=self._optimizer,
@@ -88,6 +109,7 @@ class Pipeline(Object):
         )
 
     def _accelerate(self):
+        self.info("Preparing Accelerator...")
         (
             self._model,
             self._optimizer,
@@ -101,12 +123,6 @@ class Pipeline(Object):
             self._train_dataloader,
             self._eval_dataloader,
         )
-
-    def _prepare(self):
-        self._prepare_repo()
-        self._prepare_data()
-        self._prepare_optimizer()
-        self._accelerate()
 
     def _evaluate(self):
         self._model.eval()
@@ -130,21 +146,20 @@ class Pipeline(Object):
             self._accelerator.unwrap_model(self._model).save_pretrained(
                 self._output_dir
             )
-            self._tokenizer.save_pretrained(self._output_dir)
             # self._repo.push_to_hub(commit_message=f"", blocking=False)
 
     def _train(self):
         self.info("Initializing Training Loop...")
         self.info(f"Total Steps: {self._args.num_epochs * len(self._train_dataloader)}")
         self._model.train()
-        for epoch in range(self._args.num_epochs):
-            for step, batch in enumerate(self._train_dataloader):
+        for epoch in range(1, self._args.num_epochs + 1):
+            for step, batch in enumerate(self._train_dataloader, start=1):
                 outputs = self._model(batch["input_ids"], labels=batch["input_ids"])
                 loss = outputs.loss
                 if step % (self._args.eval_steps // 10) == 0:
                     if self._accelerator.is_main_process:
                         self.info(
-                            f"Epoch: {epoch}, Step: {step}, Train Loss: {loss:.2f}"
+                            f"Epoch: {epoch}, Step: {step}, Step Loss: {loss:.2f}"
                         )
                 self._accelerator.backward(loss)
                 self._accelerator.clip_grad_norm_(self._model.parameters(), 1.0)
@@ -157,5 +172,8 @@ class Pipeline(Object):
         self._checkpoint()
 
     def run(self):
-        self._prepare()
+        self._prepare_repo()
+        self._prepare_data()
+        self._prepare_optimizer()
+        self._accelerate()
         self._train()
