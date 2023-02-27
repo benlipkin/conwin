@@ -1,11 +1,12 @@
 import argparse
 import json
+import time
 
 import accelerate
 import datasets
 import torch
 import transformers
-from huggingface_hub import Repository, get_full_repo_name
+from huggingface_hub import Repository, create_repo, get_full_repo_name
 from torch.optim import AdamW
 from torch.utils.data.dataloader import DataLoader
 from transformers import get_scheduler
@@ -46,11 +47,12 @@ class Pipeline(Object):
             ]
         )
         repo_id = get_full_repo_name(model_id)
+        # create_repo(repo_id, repo_type="model", exist_ok=True)
+        # self._repo = Repository(self._output_dir, clone_from=repo_id)
         self._output_dir.mkdir(parents=True, exist_ok=True)
         self._tokenizer.save_pretrained(self._output_dir)
         with open(self._output_dir / "training_args.json", "w") as f:
             json.dump(vars(self._args), f, indent=4)
-        # self._repo = Repository(self._output_dir, clone_from=repo_id)
 
     def _prepare_data(self):
         self.info("Preparing Dataset...")
@@ -152,6 +154,7 @@ class Pipeline(Object):
         self.info("Initializing Training Loop...")
         self.info(f"Total Steps: {self._args.num_epochs * len(self._train_dataloader)}")
         self._model.train()
+        start = time.time()
         for epoch in range(1, self._args.num_epochs + 1):
             for step, batch in enumerate(self._train_dataloader, start=1):
                 outputs = self._model(batch["input_ids"], labels=batch["input_ids"])
@@ -159,7 +162,8 @@ class Pipeline(Object):
                 if step % (self._args.eval_steps // 10) == 0:
                     if self._accelerator.is_main_process:
                         self.info(
-                            f"Epoch: {epoch}, Step: {step}, Step Loss: {loss:.2f}"
+                            f"Time: {time.strftime('%H:%M:%S', time.gmtime(time.time() - start))}, "
+                            + f"Epoch: {epoch}, Step: {step}, Step Loss: {loss:.2f}"
                         )
                 self._accelerator.backward(loss)
                 self._accelerator.clip_grad_norm_(self._model.parameters(), 1.0)
