@@ -4,6 +4,7 @@ huggingface_hub==0.12.1
 numpy==1.24.2
 torch==1.13.1
 transformers==4.26.1
+wandb==0.13.10
 mypy==1.0.1
 lxml==4.9.2
 pylint==2.16.2

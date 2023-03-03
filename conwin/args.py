@@ -23,5 +23,5 @@ class TrainingArguments:
         default=42, metadata={"help": "Random seed"}
     )
     eval_steps: typing.Optional[int] = dataclasses.field(
-        default=1_000, metadata={"help": "Number of steps between evaluations"}
+        default=500, metadata={"help": "Number of steps between evaluations"}
     )

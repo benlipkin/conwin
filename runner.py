@@ -44,7 +44,7 @@ class PipelineArguments:
 
 def main():
     args = HfArgumentParser([PipelineArguments, TrainingArguments]).parse_args()
-    args.id = hashlib.md5(str(sorted(vars(args).items())).encode()).hexdigest()
+    args.id = hashlib.sha1(str(sorted(vars(args).items())).encode()).hexdigest()[:16]
     accelerator = Accelerator()
     dataset = datasets.load_dataset(args.dataset, args.subset)
     config = AutoConfig.from_pretrained(args.model, n_positions=args.window_size)

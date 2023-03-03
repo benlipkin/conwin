@@ -20,6 +20,7 @@ update :
 env : $(PACKAGE).egg-info/
 $(PACKAGE).egg-info/ : setup.py requirements.txt
 	@conda create -yn $(PACKAGE) $(EXEC)
+	@$(ACTIVATE) ; conda install -yc conda-forge git-lfs
 	@$(ACTIVATE) ; $(INSTALL) -e "."
 
 ## test      : run testing pipeline.

@@ -1,4 +1,11 @@
 import logging
 import sys
 
-logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[
+        logging.FileHandler(filename="train.log"),
+        logging.StreamHandler(stream=sys.stdout),
+    ],
+)
