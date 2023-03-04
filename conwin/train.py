@@ -32,20 +32,23 @@ class Pipeline(Object):
         self._model = model
         self._output_dir = self._base / args.output_dir / args.id
         self._args = args
+        self._repo: Repository
+        self._train_dataloader: DataLoader
+        self._eval_dataloader: DataLoader
+        self._optimizer: AdamW
+        self._scheduler: transformers.trainer_utils.SchedulerType
+        self._best_loss: float = float("inf")
 
     def _prepare_repo(self):
         self.info("Preparing Repository...")
 
-        def human_format(num):
-            num = float("{:.3g}".format(num))
+        def human_format(num: int | float) -> str:
+            num = float(f"{num:.3g}")
             mag = 0
             while abs(num) >= 1000:
                 mag += 1
                 num /= 1000.0
-            return "{}{}".format(
-                "{:f}".format(num).rstrip("0").rstrip("."),
-                ["", "K", "M", "B", "T"][mag],
-            )
+            return f"{str(num).rstrip('.0')}{['', 'K', 'M', 'B', 'T'][mag]}"
 
         model_id = "_".join(
             str(x)
@@ -54,6 +57,7 @@ class Pipeline(Object):
                 self._args.window_size,
                 self._args.dataset,
                 human_format(self._args.num_tokens),
+                self._args.num_epochs,
                 self._args.id,
             ]
         )
@@ -62,14 +66,14 @@ class Pipeline(Object):
         self._repo = Repository(self._output_dir, clone_from=repo_id)
         self._output_dir.mkdir(parents=True, exist_ok=True)
         self._tokenizer.save_pretrained(self._output_dir)
-        with open(self._output_dir / "args.json", "w") as f:
+        with open(self._output_dir / "args.json", "w", encoding="utf-8") as f:
             json.dump(vars(self._args), f, indent=4)
-        self._repo.push_to_hub(commit_message=f"args and setup.", blocking=False)
+        self._repo.push_to_hub(commit_message="args and setup.", blocking=False)
 
     def _prepare_data(self):
         self.info("Preparing Dataset...")
 
-        def _tokenize(sample):
+        def tokenize(sample: datasets.DatasetDict):
             outputs = self._tokenizer(
                 sample["text"],
                 truncation=True,
@@ -84,9 +88,7 @@ class Pipeline(Object):
             return {"input_ids": input_batch}
 
         self._tokenizer.pad_token = self._tokenizer.eos_token
-        self._dataset = self._dataset.map(
-            _tokenize, batched=True, remove_columns="text"
-        )
+        self._dataset = self._dataset.map(tokenize, batched=True, remove_columns="text")
         self._dataset["train"] = (
             self._dataset["train"]
             .shuffle(seed=self._args.random_seed)
@@ -116,7 +118,7 @@ class Pipeline(Object):
             lr=self._args.learning_rate,
         )
         self._scheduler = get_scheduler(
-            name="linear",
+            name=self._args.scheduler,
             optimizer=self._optimizer,
             num_warmup_steps=self._args.warmup_steps,
             num_training_steps=self._args.num_epochs * len(self._train_dataloader),
@@ -151,48 +153,60 @@ class Pipeline(Object):
             perplexity = float("inf")
         return loss.item(), perplexity.item()
 
-    def _step_callback(self, epoch, step, loss, start):
+    def _step_callback(self, epoch: int, step: int, loss: float, start: float):
         if self._accelerator.is_main_process:
             self.info(
                 f"Time: {time.strftime('%H:%M:%S', time.gmtime(time.time() - start))}, "
                 + f"Epoch: {epoch}, Step: {step}, Step Loss: {loss:.2f}"
             )
-            wandb.log({"epoch": epoch, "step": step, "step_loss": loss})
 
-    def _eval_callback(self, epoch, step, save=False):
+    def _eval_callback(
+        self, epoch: int, step: int, step_loss: float, save: bool = False
+    ):
+        self._model.eval()
         loss, ppl = self._evaluate()
         if self._accelerator.is_main_process:
             self.info(f"Eval Loss: {loss:.2f}, Perplexity: {ppl:.2f}")
-            wandb.log({"epoch": epoch, "step": step, "eval_loss": loss, "ppl": ppl})
-            if save:
+            wandb.log(
+                {
+                    "epoch": epoch,
+                    "step": step,
+                    "step_loss": step_loss,
+                    "eval_loss": loss,
+                    "ppl": ppl,
+                }
+            )
+            if loss < self._best_loss:
+                self._best_loss = loss
                 self._accelerator.wait_for_everyone()
                 self._accelerator.unwrap_model(self._model).save_pretrained(
                     self._output_dir
                 )
-                shutil.copy(self._base / "train.log", self._output_dir / "train.log")
-                self._repo.push_to_hub(commit_message=f"done training.", blocking=False)
+            if save:
+                shutil.move(self._base / "train.log", self._output_dir)
+                self._repo.push_to_hub(commit_message="done training.", blocking=False)
+        self._model.train()
 
     def _train(self):
         self.info("Initializing Training Loop...")
         self.info(f"Total Steps: {self._args.num_epochs * len(self._train_dataloader)}")
         self._model.train()
         start = time.time()
-        for epoch in range(self._args.num_epochs):
-            for step, batch in enumerate(self._train_dataloader):
+        for epoch in range(1, self._args.num_epochs + 1):
+            for batch in self._train_dataloader:
+                step = locals()["step"] + 1 if "step" in locals() else 1
                 outputs = self._model(batch["input_ids"], labels=batch["input_ids"])
                 loss = outputs.loss
                 if step % (self._args.eval_steps // 10) == 0:
-                    self._step_callback(epoch, step, loss, start)
+                    self._step_callback(epoch, step, loss.item(), start)
                 self._accelerator.backward(loss)
                 self._accelerator.clip_grad_norm_(self._model.parameters(), 1.0)
                 self._optimizer.step()
                 self._scheduler.step()
                 self._optimizer.zero_grad()
-                if step % self._args.eval_steps == 0:
-                    self._model.eval()
-                    self._eval_callback(epoch, step)
-                    self._model.train()
-        self._eval_callback(epoch, step, save=True)
+                if (step == 1) | (step % self._args.eval_steps == 0):
+                    self._eval_callback(epoch, step, loss.item())
+        self._eval_callback(epoch, step, loss.item(), save=True)
 
     def run(self):
         wandb.init(project="conwin", config=vars(self._args), name=self._args.id)

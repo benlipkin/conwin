@@ -25,17 +25,11 @@ class PipelineArguments:
     model: typing.Optional[str] = dataclasses.field(
         default="gpt2", metadata={"help": "Model name or path"}
     )
-    window_size: typing.Optional[int] = dataclasses.field(
-        default=128, metadata={"help": "Window size"}
-    )
     dataset: typing.Optional[str] = dataclasses.field(
         default="wikitext", metadata={"help": "Dataset name"}
     )
     subset: typing.Optional[str] = dataclasses.field(
         default="wikitext-103-v1", metadata={"help": "Dataset subset"}
-    )
-    num_tokens: typing.Optional[int] = dataclasses.field(
-        default=50_000_000, metadata={"help": "Number of tokens to train on"}
     )
     output_dir: typing.Optional[str] = dataclasses.field(
         default="output", metadata={"help": "Output directory"}

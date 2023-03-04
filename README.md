@@ -13,3 +13,7 @@ make env
 ```bash
 accelerate launch runner.py **kwargs
 ```
+
+## Note
+
+_UNDER DEVELOPMENT_
