@@ -5,10 +5,10 @@ import typing
 @dataclasses.dataclass
 class TrainingArguments:
     num_epochs: typing.Optional[int] = dataclasses.field(
-        default=10, metadata={"help": "Number of training epochs"}
+        default=20, metadata={"help": "Number of training epochs"}
     )
     num_tokens: typing.Optional[int] = dataclasses.field(
-        default=50_000_000, metadata={"help": "Number of tokens to train on"}
+        default=100_000_000, metadata={"help": "Number of tokens to train on"}
     )
     window_size: typing.Optional[int] = dataclasses.field(
         default=128, metadata={"help": "Window size"}
@@ -33,4 +33,7 @@ class TrainingArguments:
     )
     eval_steps: typing.Optional[int] = dataclasses.field(
         default=1_000, metadata={"help": "Number of steps between evaluations"}
+    )
+    patience: typing.Optional[int] = dataclasses.field(
+        default=5, metadata={"help": "Eval steps to wait before early stopping"}
     )

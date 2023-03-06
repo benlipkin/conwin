@@ -1,6 +1,7 @@
 import argparse
 import itertools
 import json
+import multiprocessing
 import shutil
 import time
 
@@ -40,6 +41,7 @@ class Pipeline(Object):
         self._scheduler: transformers.trainer_utils.SchedulerType
         self._total_steps: int
         self._best_loss: float = float("inf")
+        self._last_improvement: int = 0
 
     def _prepare_repo(self):
         self.info("Preparing Repository...")
@@ -77,7 +79,7 @@ class Pipeline(Object):
 
         def tokenize(sample: datasets.DatasetDict):
             outputs = self._tokenizer(
-                sample["text"],
+                "\n".join(sample["text"]),
                 truncation=True,
                 max_length=self._args.window_size,
                 return_overflowing_tokens=True,
@@ -90,9 +92,18 @@ class Pipeline(Object):
             return {"input_ids": input_batch}
 
         self._tokenizer.pad_token = self._tokenizer.eos_token
-        self._dataset = self._dataset.map(tokenize, batched=True, remove_columns="text")
+        self._dataset["validation"] = self._dataset["validation"].map(
+            tokenize, remove_columns="text", batched=True, batch_size=10_000
+        )
         self._dataset["train"] = (
             self._dataset["train"]
+            .map(
+                tokenize,
+                remove_columns="text",
+                batched=True,
+                batch_size=10_000,
+                num_proc=multiprocessing.cpu_count(),
+            )
             .shuffle(seed=self._args.random_seed)
             .select(range(self._args.num_tokens // self._args.window_size + 1))
         )
@@ -181,10 +192,13 @@ class Pipeline(Object):
             )
             if loss < self._best_loss:
                 self._best_loss = loss
+                self._last_improvement = step
                 self._accelerator.wait_for_everyone()
                 self._accelerator.unwrap_model(self._model).save_pretrained(
                     self._output_dir
                 )
+                with open(self._output_dir / "best.json", "w", encoding="utf-8") as f:
+                    json.dump({"step": step, "loss": loss, "ppl": ppl}, f, indent=4)
             if save:
                 shutil.move(self._base / "train.log", self._output_dir)
                 self._repo.push_to_hub(commit_message="done training.", blocking=False)
@@ -215,6 +229,12 @@ class Pipeline(Object):
             self._take_optim_step(loss)
             if (step == 1) | (step % self._args.eval_steps == 0):
                 self._eval_callback(epoch, step, loss.item())
+                if (
+                    self._last_improvement + self._args.patience * self._args.eval_steps
+                    < step
+                ):
+                    self.info("Stopping training due to early stopping.")
+                    break
         self._eval_callback(
             self._args.num_epochs, self._total_steps, loss.item(), save=True
         )
