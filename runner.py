@@ -1,6 +1,7 @@
 import dataclasses
 import hashlib
 import math
+import pathlib
 import typing
 
 import datasets
@@ -39,6 +40,7 @@ class PipelineArguments:
 def main():
     args = HfArgumentParser([PipelineArguments, TrainingArguments]).parse_args()
     args.id = hashlib.sha1(str(sorted(vars(args).items())).encode()).hexdigest()[:16]
+    exit(0) if (pathlib.Path(args.output_dir) / args.id).exists() else None
     accelerator = Accelerator()
     dataset = datasets.load_dataset(args.dataset, args.subset)
     config = AutoConfig.from_pretrained(args.model, n_positions=args.window_size)
