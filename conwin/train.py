@@ -1,4 +1,5 @@
 import argparse
+import itertools
 import json
 import shutil
 import time
@@ -37,6 +38,7 @@ class Pipeline(Object):
         self._eval_dataloader: DataLoader
         self._optimizer: AdamW
         self._scheduler: transformers.trainer_utils.SchedulerType
+        self._total_steps: int
         self._best_loss: float = float("inf")
 
     def _prepare_repo(self):
@@ -101,6 +103,7 @@ class Pipeline(Object):
         self._eval_dataloader = DataLoader(
             self._dataset["validation"], batch_size=self._args.batch_size
         )
+        self._total_steps = self._args.num_epochs * len(self._train_dataloader)
 
     def _prepare_optimizer(self):
         self.info("Preparing Optimizer...")
@@ -121,7 +124,7 @@ class Pipeline(Object):
             name=self._args.scheduler,
             optimizer=self._optimizer,
             num_warmup_steps=self._args.warmup_steps,
-            num_training_steps=self._args.num_epochs * len(self._train_dataloader),
+            num_total_steps=self._total_steps,
         )
 
     def _accelerate(self):
@@ -153,7 +156,7 @@ class Pipeline(Object):
             perplexity = float("inf")
         return loss.item(), perplexity.item()
 
-    def _step_callback(self, epoch: int, step: int, loss: float, start: float):
+    def _log_callback(self, epoch: int, step: int, loss: float, start: float):
         if self._accelerator.is_main_process:
             self.info(
                 f"Time: {time.strftime('%H:%M:%S', time.gmtime(time.time() - start))}, "
@@ -187,26 +190,34 @@ class Pipeline(Object):
                 self._repo.push_to_hub(commit_message="done training.", blocking=False)
         self._model.train()
 
+    def _take_optim_step(self, loss: torch.Tensor):
+        self._accelerator.backward(loss)
+        self._accelerator.clip_grad_norm_(self._model.parameters(), 1.0)
+        self._optimizer.step()
+        self._scheduler.step()
+        self._optimizer.zero_grad()
+
     def _train(self):
         self.info("Initializing Training Loop...")
-        self.info(f"Total Steps: {self._args.num_epochs * len(self._train_dataloader)}")
+        self.info(f"Total Steps: {self._total_steps}")
         self._model.train()
         start = time.time()
-        for epoch in range(1, self._args.num_epochs + 1):
-            for batch in self._train_dataloader:
-                step = locals()["step"] + 1 if "step" in locals() else 1
-                outputs = self._model(batch["input_ids"], labels=batch["input_ids"])
-                loss = outputs.loss
-                if step % (self._args.eval_steps // 10) == 0:
-                    self._step_callback(epoch, step, loss.item(), start)
-                self._accelerator.backward(loss)
-                self._accelerator.clip_grad_norm_(self._model.parameters(), 1.0)
-                self._optimizer.step()
-                self._scheduler.step()
-                self._optimizer.zero_grad()
-                if (step == 1) | (step % self._args.eval_steps == 0):
-                    self._eval_callback(epoch, step, loss.item())
-        self._eval_callback(epoch, step, loss.item(), save=True)
+        for step, (epoch, batch) in enumerate(
+            itertools.product(
+                range(1, self._args.num_epochs + 1), self._train_dataloader
+            ),
+            start=1,
+        ):
+            outputs = self._model(batch["input_ids"], labels=batch["input_ids"])
+            loss = outputs.loss
+            if step % (self._args.eval_steps // 10) == 0:
+                self._log_callback(epoch, step, loss.item(), start)
+            self._take_optim_step(loss)
+            if (step == 1) | (step % self._args.eval_steps == 0):
+                self._eval_callback(epoch, step, loss.item())
+        self._eval_callback(
+            self._args.num_epochs, self._total_steps, loss.item(), save=True
+        )
 
     def run(self):
         wandb.init(project="conwin", config=vars(self._args), name=self._args.id)
