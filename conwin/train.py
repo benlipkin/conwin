@@ -127,7 +127,7 @@ class Pipeline(Object):
             name=self._args.scheduler,
             optimizer=self._optimizer,
             num_warmup_steps=self._args.warmup_steps,
-            num_total_steps=self._total_steps,
+            num_training_steps=self._total_steps,
         )
 
     def _accelerate(self):
