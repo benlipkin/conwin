@@ -28,17 +28,25 @@ $(PACKAGE).egg-info/ : setup.py requirements.txt
 test : mypy pylint
 mypy : env html/mypy/index.html
 pylint : env html/pylint/index.html
-html/mypy/index.html : $(PACKAGE)/*.py
+html/mypy/index.html : **/*.py
 	@$(ACTIVATE) ; mypy \
 	-p $(PACKAGE) \
 	--ignore-missing-imports \
 	--html-report $(@D)
 html/pylint/index.html : html/pylint/index.json
 	@$(ACTIVATE) ; pylint-json2html -o $@ -e utf-8 $<
-html/pylint/index.json : $(PACKAGE)/*.py
+html/pylint/index.json : **/*.py
 	@mkdir -p $(@D)
 	@$(ACTIVATE) ; pylint $(PACKAGE) \
 	--disable C0114,C0115,C0116 \
 	--generated-members torch.* \
 	--output-format=colorized,json:$@ \
 	|| pylint-exit $$?
+
+## run	   : run the main experiment.
+.PHONY : run
+run : env 1024 512 256 128 64 32 16 8
+1024 512 256 128 64 32 16 8 : **/*.py
+	@$(ACTIVATE) ; accelerate launch runner.py \
+	--window_size $@ \
+	--batch_size $$(expr 16384 / $@)
