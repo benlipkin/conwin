@@ -1,7 +1,6 @@
 import argparse
 import itertools
 import json
-import multiprocessing
 import shutil
 import time
 
@@ -52,7 +51,7 @@ class Pipeline(Object):
             while abs(num) >= 1000:
                 mag += 1
                 num /= 1000.0
-            return f"{str(num).rstrip('.0')}{['', 'K', 'M', 'B', 'T'][mag]}"
+            return f"{str(num).rstrip('0').rstrip('.')}{['', 'K', 'M', 'B', 'T'][mag]}"
 
         model_id = "_".join(
             str(x)
@@ -92,18 +91,11 @@ class Pipeline(Object):
             return {"input_ids": input_batch}
 
         self._tokenizer.pad_token = self._tokenizer.eos_token
-        self._dataset["validation"] = self._dataset["validation"].map(
+        self._dataset = self._dataset.map(
             tokenize, remove_columns="text", batched=True, batch_size=10_000
         )
         self._dataset["train"] = (
             self._dataset["train"]
-            .map(
-                tokenize,
-                remove_columns="text",
-                batched=True,
-                batch_size=10_000,
-                num_proc=multiprocessing.cpu_count(),
-            )
             .shuffle(seed=self._args.random_seed)
             .select(range(self._args.num_tokens // self._args.window_size + 1))
         )
