@@ -45,7 +45,9 @@ def main():
     dataset = datasets.load_dataset(args.dataset, args.subset)
     config = AutoConfig.from_pretrained(args.model, n_positions=args.window_size)
     config.vocab_size = 128 * math.ceil(config.vocab_size / 128)
-    tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=True)
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.model, model_max_length=args.window_size, use_fast=True
+    )
     model = AutoModelForPreTraining.from_config(config)
     Pipeline(accelerator, dataset, tokenizer, model, args).run()
 
