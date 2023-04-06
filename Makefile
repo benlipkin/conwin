@@ -50,3 +50,13 @@ run : env 1024 512 256 128 64 32 16 8
 	@$(ACTIVATE) ; accelerate launch runner.py \
 	--window_size $@ \
 	--batch_size $$(expr 16384 / $@)
+
+## scores  : run brainscore pipeline.
+.PHONY : scores
+scores : analysis/src/run.py
+	@source activate brainscore; cd $(<D); python $(<F)
+
+## plots   : generate plots.
+.PHONY : plots
+plots : analysis/src/plots.py scores 
+	@source activate brainscore; cd $(<D); python $(<F)
